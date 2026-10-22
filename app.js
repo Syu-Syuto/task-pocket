@@ -1,4 +1,4 @@
-import { firebaseConfig } from './config.js';
+import { firebaseConfig } from './config.js?v=firebase-1';
 import {dayKey,selectTasks,taskCounts} from './model.js';
 const $=s=>document.querySelector(s), key='task-pocket-local-v1';
 let tasks=[],categories=[],category='all',filter='open',editing=null,cloud=null,user=null,ready=false,stops=[],generation=0;
