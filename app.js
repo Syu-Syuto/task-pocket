@@ -1,3 +1,4 @@
+import {startFirebase} from './firebase-start.js?v=auth-first-1';
 import { firebaseConfig } from './config.js?v=firebase-1';
 import {dayKey,selectTasks,taskCounts} from './model.js';
 import {themes,defaultTheme,getTheme,applyTheme} from './themes.js?v=themes-1';
@@ -25,10 +26,68 @@ $('#category-form').onsubmit=async e=>{e.preventDefault();const f=e.currentTarge
 $('#all').onclick=()=>{category='all';render();};$('#manage').onclick=()=>$('#category-dialog').showModal();$('#add').onclick=()=>openTask();$('#search').oninput=render;$('#sort').onchange=render;document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b));render();});document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>document.getElementById(b.dataset.close).close());$('#today').textContent=new Intl.DateTimeFormat('ja-JP',{year:'numeric',month:'long',day:'numeric',weekday:'short'}).format(new Date());
 $('#export').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify({tasks,categories},null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`task-pocket-${dayKey()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 window.addEventListener('storage',e=>{if(!cloud&&e.key===key){localLoad();render();}});
-async function boot(){if(!firebaseConfig){localLoad();loadLocalAppearance();ready=true;$('#auth').textContent='この端末で利用中';$('#auth').onclick=()=>alert('端末間の同期にはconfig.jsのFirebase設定が必要です。README.mdをご覧ください。');$('#connection').textContent='○ ローカル保存モード · このブラウザーだけに保存されます（端末間の同期なし）';render();return;}try{const base='https://www.gstatic.com/firebasejs/12.4.0/';const [app,auth,db]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);const instance=app.initializeApp(firebaseConfig),session=auth.getAuth(instance);cloud={...db,db:db.getFirestore(instance)};$('#auth').onclick=async()=>{try{if(user)await auth.signOut(session);else await auth.signInWithPopup(session,new auth.GoogleAuthProvider());}catch(e){error(e);}};auth.onAuthStateChanged(session,u=>{generation++;const current=generation;stops.forEach(f=>f());stops=[];user=u;ready=false;tasks=[];categories=[];category='all';resetAppearance();$('#auth').textContent=u?'ログアウト':'Googleでログイン';$('#connection').textContent=u?`${u.email} · 同期データを読み込み中…`:'Googleでログインすると、スマホとPCで同期できます。';render();if(!u)return;subscribeAppearance(current);const loaded=new Set();for(const kind of ['tasks','categories'])stops.push(db.onSnapshot(db.collection(cloud.db,'users',u.uid,kind),{includeMetadataChanges:true},snapshot=>{if(current!==generation)return;const data=snapshot.docs.map(d=>({...d.data(),id:d.id}));if(kind==='tasks')tasks=data;else categories=data;loaded.add(kind);ready=loaded.size===2;$('#connection').textContent=`${u.email} · ${snapshot.metadata.fromCache?'キャッシュ表示（接続確認中）':snapshot.metadata.hasPendingWrites?'変更を送信中…':'クラウドに接続済み'}`;render();},e=>{ready=false;$('#connection').textContent='同期エラー · 設定と接続を確認してください';error(e);render();}));});}catch(e){$('#connection').textContent='Firebaseに接続できません。設定とネットワークを確認して再読み込みしてください。';$('#auth').textContent='接続エラー';error(e);}render();}
+async function boot(){
+  if(!firebaseConfig){
+    localLoad();loadLocalAppearance();ready=true;
+    $('#auth').textContent='この端末で利用中';
+    $('#auth').onclick=()=>alert('端末間の同期にはconfig.jsのFirebase設定が必要です。README.mdをご覧ください。');
+    $('#connection').textContent='○ ローカル保存モード · このブラウザーだけに保存されます（端末間の同期なし）';
+    render();return;
+  }
+  render();$('#auth').disabled=true;
+  try{
+    const {auth,session,loadStore}=await startFirebase(firebaseConfig);
+    $('#auth').onclick=async()=>{
+      try{
+        $('#auth').disabled=true;
+        if(user)await auth.signOut(session);
+        else await auth.signInWithPopup(session,new auth.GoogleAuthProvider());
+      }catch(e){error(e);}
+      finally{$('#auth').disabled=false;}
+    };
+    auth.onAuthStateChanged(session,async u=>{
+      const current=++generation;
+      stops.forEach(f=>f());stops=[];cloud=null;user=u;ready=false;tasks=[];categories=[];category='all';
+      resetAppearance();
+      $('#auth').disabled=false;
+      $('#auth').textContent=u?'ログアウト':'Googleでログイン';
+      $('#connection').textContent=u?`${u.email} · ログイン済み、課題を読み込み中…`:'Googleでログインすると、スマホとPCで同期できます。';
+      render();if(!u)return;
+      try{
+        const db=await loadStore();
+        if(current!==generation)return;
+        cloud=db;appearanceStatus();subscribeAppearance(current);
+        const loaded=new Set(),failed=new Set();
+        for(const kind of ['tasks','categories']){
+          stops.push(db.onSnapshot(db.collection(db.db,'users',u.uid,kind),{includeMetadataChanges:true},snapshot=>{
+            if(current!==generation)return;
+            const data=snapshot.docs.map(d=>({...d.data(),id:d.id}));
+            if(kind==='tasks')tasks=data;else categories=data;
+            loaded.add(kind);ready=loaded.size===2&&failed.size===0;
+            $('#connection').textContent=failed.size?'同期エラー · 設定と接続を確認してください':`${u.email} · ${snapshot.metadata.fromCache?'キャッシュ表示（接続確認中）':snapshot.metadata.hasPendingWrites?'変更を送信中…':'クラウドに接続済み'}`;
+            render();
+          },e=>{
+            if(current!==generation)return;
+            failed.add(kind);ready=false;$('#connection').textContent='同期エラー · 設定と接続を確認してください';error(e);render();
+          }));
+        }
+      }catch(e){
+        if(current!==generation)return;
+        $('#connection').textContent='ログイン済み · 課題の読み込みに失敗しました。再読み込みしてください。';
+        error(e);render();
+      }
+    },e=>{
+      $('#auth').disabled=false;$('#auth').textContent='Googleでログイン';
+      $('#connection').textContent='ログイン状態を確認できませんでした。再読み込みしてください。';error(e);
+    });
+  }catch(e){
+    $('#connection').textContent='Firebaseに接続できません。設定とネットワークを確認して再読み込みしてください。';
+    $('#auth').textContent='接続エラー';error(e);
+  }
+}
 function appearanceStatus(){
   $('#theme-status').textContent=!firebaseConfig?'保存するとこのブラウザーに記憶します。':!user?'未ログインのためプレビューのみです。Googleでログインすると保存できます。':!appearanceLoaded?'アカウントの配色を読み込んでいます。':'保存するとGoogleアカウントに紐づき、他の端末にも反映されます。';
-  $('#save-theme').disabled=appearanceSaving||Boolean(firebaseConfig&&(!user||!appearanceLoaded));
+  $('#save-theme').disabled=appearanceSaving||Boolean(firebaseConfig&&(!user||!appearanceLoaded||!cloud));
 }
 function resetAppearance(){
   if($('#appearance-dialog').open)$('#appearance-dialog').close();
@@ -73,7 +132,7 @@ $('#appearance-dialog').addEventListener('cancel',e=>{if(appearanceSaving)e.prev
 $('#appearance-form').onsubmit=async e=>{
   e.preventDefault();if(appearanceSaving)return;
   const theme=getTheme(e.currentTarget.elements.theme.value).id,current=generation;
-  if(firebaseConfig&&(!user||!appearanceLoaded))return;
+  if(firebaseConfig&&(!user||!appearanceLoaded||!cloud))return;
   appearanceSaving=true;appearanceStatus();
   const controls=Array.from(e.currentTarget.querySelectorAll('input,button'));
   controls.forEach(control=>control.disabled=true);
